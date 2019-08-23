@@ -1,6 +1,7 @@
 import usocket as socket
 import utime
 import gc
+import network
 
 
 DOC_ROOT_PREFIX = ""
@@ -11,9 +12,11 @@ BIND_IP = "0.0.0.0"
 HTTP_VERSION = b"HTTP/1.0"
 HTTP_RESPONSE = {
     200: b"OK",
-    501: b"Not Implemented",
+    400: b"Bad Request",
     404: b"Not Found",
-    500: b"Server Error"
+    405: b"Method Not Allowed",
+    500: b"Server Error",
+    501: b"Not Implemented"
 }
 
 
@@ -39,7 +42,15 @@ PATH_REWRITE = {
 def test(method, path, query, body):
     if query == None:
         query = ""
-    return (200, {"Content-Type" : "text/plain"}, query + "_" + str(utime.ticks_ms()) + "\r\n" + "Free mem:" + str(gc.mem_free()))
+    if body:
+        body_items = body.split("&")
+        body = "\r\n".join(body_items)
+    response = query + "_" + str(utime.ticks_ms()) + "\r\n"
+    response += "Body:\r\n" + body
+    response += "Free mem: " + str(gc.mem_free())
+    return (200, {"Content-Type" : "text/plain"}, response)
+
+
 
 def response_status(status_code):
     return HTTP_VERSION + " " + bytearray(str(status_code)) + b" " + HTTP_RESPONSE[status_code] + b"\r\n"
@@ -56,10 +67,9 @@ def header_bytes(headers):
     return h_bytes + b"\r\n"
 
 
-def process_request(method, uri, headers, body=None, handlers=None):
+def respond_to_request(method, uri, headers, body=None, handlers=None):
     path = None
     query = None
-    fragment = None
     uri_parts = uri.split("?")
     path = uri_parts[0]
     print("Path:", path)
@@ -71,9 +81,6 @@ def process_request(method, uri, headers, body=None, handlers=None):
         uri_parts = uri_parts[1].split("#")
         query = uri_parts[0]
         print("Query:", query)
-        if len(uri_parts) > 1:
-            fragment = uri_parts[1]
-            print("Fragment:", fragment)
     if path in handlers:
         response = handlers[path](method, path, query, body)
         status = response[0]
@@ -100,9 +107,9 @@ def process_request(method, uri, headers, body=None, handlers=None):
                 status = 404
         else:
             status = 501
-        if status != 200:
-            content_type = b"text/html"
-            content = error_page(status)
+    if status != 200:
+        content_type = b"text/html"
+        content = error_page(status)
         headers = {"Content-Type: " : content_type}
     return response_status(status) + header_bytes(headers) + b"\r\n" + content
 
@@ -113,7 +120,51 @@ def trim(line):
     return line
 
 
-def main(micropython_optimize=True, port=PORT):
+def process_http_request(client_stream, handlers):
+    req = None
+    try:
+        req = client_stream.readline()
+        req = trim(req)
+        print("Request:")
+        print(req)
+    except OSError as error:
+        print("Error receiving request:", error)
+    if req:
+        request = req.decode().split(" ")
+        method = request[0].strip()
+        uri = request[1].strip()
+        print("Method:", method)
+        print("URI:", uri)
+        headers = {}
+        print(req)
+        while True:
+            h = client_stream.readline()
+            h = trim(h)
+            if h == b"" or h == b"\r\n":
+                break
+            else:
+                h_item = h.decode().split(":")
+                h_key = h_item.pop(0).strip()
+                h_value = ":".join(h_item).strip()
+                headers[h_key] = h_value
+            print(h)
+        print("Headers:",headers)
+        headers_lower = {h_key.lower():h_value for h_key, h_value in headers.items()}
+        if "content-length" in headers_lower:
+            content_length = int(headers_lower["content-length"])
+            body = client_stream.read(content_length).decode()
+        else:
+            body = None
+        print("Body:", body)
+        response = respond_to_request(method, uri, headers, body=body, handlers=handlers)
+        try:
+            client_stream.write(response)
+        except OSError as error:
+            print("Error sending response:", error)
+        print()
+
+
+def start(micropython_optimize=True, port=PORT, handlers=None):
     s = socket.socket()
 
     # Binding to all interfaces - server will be accessible to other hosts!
@@ -145,39 +196,7 @@ def main(micropython_optimize=True, port=PORT):
             # especially on a resource-constrained embedded device, you
             # may take this shortcut to save resources.
             client_stream = client_sock
-        print("Request:")
-        req = client_stream.readline()
-        req = trim(req)
-        print(req)
-        if req:
-            request = req.decode().split(" ")
-            method = request[0]
-            uri = request[1]
-            print("Method:", method)
-            print("URI:", uri)
-            headers = {}
-            print(req)
-        while True:
-            h = client_stream.readline()
-            h = trim(h)
-            if h == b"" or h == b"\r\n":
-                break
-            else:
-                h_item = str(h).split(":")
-                h_key = h_item.pop(0)
-                h_value = ":".join(h_item)
-                headers[h_key] = h_value
-            print(h)
-        print("Headers:",headers)
-        if req:
-            response = process_request(method, uri, headers, body=None, handlers={"/test":test})
-        try:
-            client_stream.write(response)
-        except OSError:
-            print("Error sending response")
-        client_stream.close()
-        if not micropython_optimize:
-            client_sock.close()
-        print()
-
-main()
+            process_http_request(client_stream, handlers)
+            client_stream.close()
+            if not micropython_optimize:
+                client_sock.close()
