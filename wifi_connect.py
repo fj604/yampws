@@ -95,16 +95,19 @@ def connect(method, path, query, body):
     else:
         return (405, None, None)
 
+
 def restart(method, path, query, body):
     if method == "POST":
         machine.reset()
     else:
         return (405, None, None)
 
+
 handlers = {
     "/scan":scan,
     "/connect":connect,
     "/restart":restart
 }
+
 
 webserver.start(handlers=handlers)

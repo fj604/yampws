@@ -1,7 +1,7 @@
 import utime
 import network
 
-CONNECT_TIME_MS = 10000
+CONNECT_TIME_MS = 10000 
 
 sta = network.WLAN(network.STA_IF)
 print("Checking WIFI...")

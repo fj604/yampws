@@ -17,4 +17,4 @@ def decode(string):
         else:
             ret += string[p]
             p += 1
-    return ret.replace("+"," ")
+    return ret.replace("+", " ")
